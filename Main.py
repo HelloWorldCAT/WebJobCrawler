@@ -3,16 +3,24 @@ import re
 import urllib2
 import robotparser
 
-def download(url, userAgent = 'chrome', num_retries = 2):
+def download(url, userAgent = 'chrome', proxy=None, num_retries = 2):
     print 'Downloading:', url
     headers = {'User-agent': userAgent}
     request = urllib2.Request(url, headers=headers)
+    
+    opener = urllib2.build_opener()
+    # add proxy support
+    if proxy:
+        proxy_params = {urlparse.urlparse(url).scheme: proxy}
+        opener.add_handler(urllib2.ProxyHandler(proxy_params))
+        
     try:
-        html = urllib2.urlopen(request).read()
+        html = opener.open(request).read()
     except urllib2.URLError as e:
         print 'Download error:', e.reason
         html = None
         if num_retries > 0:
+            #for server error, retry twice by default
             if hasattr(e, 'code') and 500< e.code < 600:
                 download(url, userAgent, num_retries-1)
     return html
@@ -37,6 +45,7 @@ def link_crawler(seed_url, link_regex):
                     if link not in seen:
                         seen.add(link)
                         crawlQueue.append(link)
+                        print link
         else:
             print 'blocked by robots.txt', url
 
