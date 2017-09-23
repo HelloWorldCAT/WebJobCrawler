@@ -2,6 +2,7 @@ import urlparse
 import re
 import urllib2
 import robotparser
+import Throttle
 
 def download(url, userAgent = 'chrome', proxy=None, num_retries = 2):
     print 'Downloading:', url
@@ -13,7 +14,7 @@ def download(url, userAgent = 'chrome', proxy=None, num_retries = 2):
     if proxy:
         proxy_params = {urlparse.urlparse(url).scheme: proxy}
         opener.add_handler(urllib2.ProxyHandler(proxy_params))
-        
+
     try:
         html = opener.open(request).read()
     except urllib2.URLError as e:
@@ -29,23 +30,36 @@ def get_link(html):
     webpage_regex = re.compile('<a[^>]+href=["\'](.*?)["\']', re.IGNORECASE)
     return webpage_regex.findall(html)
 
-def link_crawler(seed_url, link_regex):
+
+def normalize(seed_url, link):
+    """Normalize this URL by removing hash and adding domain
+    """
+    link, _ = urlparse.urldefrag(link) # remove hash to avoid duplicates
+    return urlparse.urljoin(seed_url, link)
+
+def link_crawler(seed_url, link_regex, delay=5, max_depth=2):
+    throttle = Throttle.Throttle(delay)
     crawlQueue = [seed_url]
-    seen = set(crawlQueue)
+    #avoid scrap trap
+    seen = {seed_url: 0}
     rp = robotparser.RobotFileParser()
     rp.set_url(seed_url + '/robots.txt')
     rp.read()
     while crawlQueue:
         url = crawlQueue.pop()
         if rp.can_fetch("", url):
+            throttle.wait(url)
             html = download(url)
-            for link in get_link(html):
-                if re.match(link_regex, link):
-                    link = urlparse.urljoin(seed_url, link)
-                    if link not in seen:
-                        seen.add(link)
-                        crawlQueue.append(link)
-                        print link
+
+            depth = seen[url]
+            if depth < max_depth:
+                for link in get_link(html):
+                    if re.match(link_regex, link):
+                        link = normalize(seed_url, link)
+                        if link not in seen:
+                            seen[link] = depth + 1
+                            crawlQueue.append(link)
+                            print link
         else:
             print 'blocked by robots.txt', url
 
