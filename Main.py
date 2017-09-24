@@ -3,30 +3,19 @@ import re
 import urllib2
 import robotparser
 import Throttle
+from ScrapCallback import ScrapCallback
+from AlexaCallback import AlexaCallback
+from Downloader import Downloader
+from DiskCache import DiskCache
+from MongoCache import MongoCache
 
-def download(url, userAgent = 'chrome', proxy=None, num_retries = 2):
-    print 'Downloading:', url
-    headers = {'User-agent': userAgent}
-    request = urllib2.Request(url, headers=headers)
-    
-    opener = urllib2.build_opener()
-    # add proxy support
-    if proxy:
-        proxy_params = {urlparse.urlparse(url).scheme: proxy}
-        opener.add_handler(urllib2.ProxyHandler(proxy_params))
 
-    try:
-        html = opener.open(request).read()
-    except urllib2.URLError as e:
-        print 'Download error:', e.reason
-        html = None
-        if num_retries > 0:
-            #for server error, retry twice by default
-            if hasattr(e, 'code') and 500< e.code < 600:
-                download(url, userAgent, num_retries-1)
-    return html
+def same_domain(url1, url2):
+    """Return True if both URL's belong to same domain
+    """
+    return urlparse.urlparse(url1).netloc == urlparse.urlparse(url2).netloc
 
-def get_link(html):
+def get_links(html):
     webpage_regex = re.compile('<a[^>]+href=["\'](.*?)["\']', re.IGNORECASE)
     return webpage_regex.findall(html)
 
@@ -37,31 +26,64 @@ def normalize(seed_url, link):
     link, _ = urlparse.urldefrag(link) # remove hash to avoid duplicates
     return urlparse.urljoin(seed_url, link)
 
-def link_crawler(seed_url, link_regex, delay=5, max_depth=2):
-    throttle = Throttle.Throttle(delay)
-    crawlQueue = [seed_url]
-    #avoid scrap trap
-    seen = {seed_url: 0}
+def get_robots(url):
+    """Initialize robots parser for this domain
+    """
     rp = robotparser.RobotFileParser()
-    rp.set_url(seed_url + '/robots.txt')
+    rp.set_url(urlparse.urljoin(url, '/robots.txt'))
     rp.read()
-    while crawlQueue:
-        url = crawlQueue.pop()
-        if rp.can_fetch("", url):
-            throttle.wait(url)
-            html = download(url)
+    return rp
 
-            depth = seen[url]
-            if depth < max_depth:
-                for link in get_link(html):
-                    if re.match(link_regex, link):
-                        link = normalize(seed_url, link)
-                        if link not in seen:
-                            seen[link] = depth + 1
-                            crawlQueue.append(link)
-                            print link
+def link_crawler(seed_url, link_regex=None, delay=5, max_depth=-1, max_urls=-1, user_agent='wswp', proxies=None, num_retries=1, scrape_callback=None, cache=None):
+    """Crawl from the given seed URL following links matched by link_regex
+    """
+    # the queue of URL's that still need to be crawled
+    crawl_queue = [seed_url]
+    # the URL's that have been seen and at what depth
+    seen = {seed_url: 0}
+    # track how many URL's have been downloaded
+    num_urls = 0
+    rp = None
+    # rp = get_robots(seed_url)
+    D = Downloader(delay=delay, user_agent=user_agent, proxies=proxies, num_retries=num_retries, cache=cache)
+
+    while crawl_queue:
+        url = crawl_queue.pop()
+        print "visting URL -------", url
+        depth = seen[url]
+        # check url passes robots.txt restrictions
+        if rp is None or rp.can_fetch(user_agent, url):
+            html = D(url)
+            links = []
+            if scrape_callback:
+                links.extend(scrape_callback(url, html) or [])
+            if depth != max_depth:
+                # can still crawl further
+                if link_regex:
+                    # filter for links matching our regular expression
+                    links.extend(link for link in get_links(html) if re.search(link_regex, link))
+                for link in links:
+                    link = normalize(seed_url, link)
+                    # check whether already crawled this link
+                    if link not in seen:
+                        seen[link] = depth + 1
+                        # check link is within same domain
+                        # if same_domain(seed_url, link):
+                            # success! add this new link to queue
+                        crawl_queue.append(link)
+
+            # check whether have reached downloaded maximum
+            num_urls += 1
+            if num_urls == max_urls:
+                break
         else:
-            print 'blocked by robots.txt', url
+            print 'Blocked by robots.txt:', url
 
 
-link_crawler('http://example.webscraping.com', '.*/(index|view)')
+# link_crawler('http://example.webscraping.com', '/(index|view)', 
+#     delay=0, num_retries=1, max_depth=1, user_agent='GoodCrawler', scrape_callback=ScrapCallback(), cache=MongoCache())
+
+
+link_crawler('http://s3.amazonaws.com/alexa-static/top-1m.csv.zip',  
+    delay=0, num_retries=1, max_depth=1, user_agent='GoodCrawler', 
+    scrape_callback=AlexaCallback(), cache=MongoCache())
